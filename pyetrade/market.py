@@ -178,6 +178,7 @@ class ETradeMarket(object):
         self,
         underlier: str,
         expiry_date: datetime.date,
+        include_weekly: bool | None = None,
         skip_adjusted: str = None,
         chain_type: str = None,
         strike_price_near: int = None,
@@ -258,6 +259,8 @@ class ETradeMarket(object):
             args.append("optionCategory=%s" % option_category.upper())
         if price_type is not None:
             args.append("priceType=%s" % price_type.upper())
+        if include_weekly is not None:
+            args.append("includeWeekly=%s" % str(include_weekly))
         if skip_adjusted is not None:
             args.append("skipAdjusted=%s" % str(skip_adjusted))
         if no_of_strikes is not None:
