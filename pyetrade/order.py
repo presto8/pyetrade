@@ -37,6 +37,10 @@ class RequestException(Exception):
     pass
 
 
+class OrderRequest(dict):
+    pass
+
+
 def get_request_result(req: OAuth1Session.request, resp_format: str = "xml") -> dict:
     LOGGER.debug(req.text)
 
@@ -353,57 +357,76 @@ class ETradeOrder(object):
         :EtradeRef: https://apisb.etrade.com/docs/api/order/api-order-v1.html
 
         """
-        securityType = kwargs.get("securityType", "EQ")  # EQ by default
-        product = {"securityType": securityType, "symbol": kwargs["symbol"]}
+        security_type = kwargs.get("securityType", "EQ")
+        return __class__.build_multileg_order_payload(order_type, security_type, kwargs['clientOrderId'], kwargs)
 
-        if securityType == "OPTN":
-            expiryDate = dateutil.parser.parse(
-                kwargs.pop("expiryDate")
-            )  # dateutil can handle most date formats
-            product.update(
-                {
-                    "expiryDay": expiryDate.day,
-                    "expiryMonth": expiryDate.month,
-                    "expiryYear": expiryDate.year,
-                    "callPut": kwargs["callPut"],
-                    "strikePrice": kwargs["strikePrice"],
-                }
-            )
+    @staticmethod
+    def build_multileg_order_payload(order_request_type: str, order_type: str, client_order_id: str, *order_requests) -> dict:
+        orders = []
+        preview_ids = []
 
-        instrument = {
-            "Product": product,
-            "orderAction": kwargs["orderAction"],
-            "quantityType": "QUANTITY",
-            "quantity": kwargs["quantity"],
-        }
+        for order_request in order_requests:
+            securityType = order_request.get("securityType", "EQ")  # EQ by default
 
-        order = kwargs
-        order["Instrument"] = instrument
+            if securityType != order_type:
+                raise OrderException("securityType must be the same for all legs")
+            if order_request['clientOrderId'] != client_order_id:
+                raise OrderException("clientOrderId must be the same for all legs")
 
-        def remove_invalid_price_from_kwargs(key: str) -> None:
-            if float(kwargs.get(key, 0)) <= 0:
-                kwargs.pop(key, 0)
+            product = {"securityType": securityType, "symbol": order_request["symbol"]}
 
-        remove_invalid_price_from_kwargs("stopPrice")
-        remove_invalid_price_from_kwargs("limitPrice")
+            if securityType == "OPTN":
+                expiryDate = dateutil.parser.parse(
+                    order_request.pop("expiryDate")
+                )  # dateutil can handle most date formats
+                product.update(
+                    {
+                        "expiryDay": expiryDate.day,
+                        "expiryMonth": expiryDate.month,
+                        "expiryYear": expiryDate.year,
+                        "callPut": order_request["callPut"],
+                        "strikePrice": order_request["strikePrice"],
+                    }
+                )
 
-        if "stopPrice" in kwargs:
-            stopPrice = float(kwargs["stopPrice"])
-            round_down = "SELL" == kwargs["orderAction"][:4]
-            spstr = to_decimal_str(stopPrice, round_down)
+            instrument = {
+                "Product": product,
+                "orderAction": order_request["orderAction"],
+                "quantityType": "QUANTITY",
+                "quantity": order_request["quantity"],
+            }
 
-            order["stopPrice"] = spstr
+            order_request["Instrument"] = instrument
+
+            def remove_invalid_price_from_kwargs(key: str) -> None:
+                if float(order_request.get(key, 0)) <= 0:
+                    order_request.pop(key, 0)
+
+            remove_invalid_price_from_kwargs("stopPrice")
+            remove_invalid_price_from_kwargs("limitPrice")
+
+            if "stopPrice" in order_request:
+                stopPrice = float(order_request["stopPrice"])
+                round_down = "SELL" == order_request["orderAction"][:4]
+                spstr = to_decimal_str(stopPrice, round_down)
+
+                order_request["stopPrice"] = spstr
+
+            try:
+                preview_ids += [order_request["previewId"]]
+            except KeyError:
+                pass
+
+            orders += [order_request]
 
         payload = {
-            order_type: {
-                "orderType": securityType,
-                "clientOrderId": kwargs["clientOrderId"],
-                "Order": order,
+            order_request_type: {
+                "orderType": order_type,
+                "clientOrderId": client_order_id,
+                "Order": orders,
+                "PreviewIds": [dict(previewId=x) for x in preview_ids],
             }
         }
-
-        if "previewId" in kwargs:
-            payload[order_type]["PreviewIds"] = {"previewId": kwargs["previewId"]}
 
         return payload
 
@@ -551,6 +574,9 @@ class ETradeOrder(object):
         payload = self.build_order_payload("PreviewOrderRequest", **kwargs)
 
         return self.perform_request(self.session.post, api_url, payload, "xml")
+
+    def preview_option_order(self, **kwargs) -> dict:
+        return self.preview_equity_order(**kwargs, securityType="OPTN")
 
     def change_preview_equity_order(
         self, account_id_key: str, order_id: str, **kwargs
